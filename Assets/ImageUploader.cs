@@ -3,13 +3,22 @@ using System.Collections;
 using System.IO;
 using UnityEngine;
 using UnityEngine.Networking;
+using UnityEngine.UI;
+using PassthroughCameraSamples;
 using Debug = UnityEngine.Debug;
 
 public class ImageUploader : MonoBehaviour
 {
-    public Camera arCamera;
-    public string serverUrl = "https://9469-38-101-220-234.ngrok-free.app";
-    public float cameraFeedInterval = 1f; // More frequent updates for the web view
+    [Header("Server Settings")]
+    public string serverUrl = "https://3d35-38-101-220-234.ngrok-free.app";
+    public float cameraFeedInterval = 1f;
+
+    [Header("Passthrough Settings")]
+    [SerializeField] private WebCamTextureManager webCamTextureManager;
+    [SerializeField] private RawImage previewImage; // Optional: for debugging/preview
+
+    [Header("Fallback Settings")]
+    public Camera arCamera; // Keep as fallback for non-Quest devices
 
     [System.Serializable]
     public class Detection
@@ -25,13 +34,34 @@ public class ImageUploader : MonoBehaviour
         public Detection[] detections;
     }
 
+    private bool usePassthroughCamera = false;
+
+    void Awake()
+    {
+        // Check if we have a WebCamTextureManager
+        if (webCamTextureManager == null)
+        {
+            webCamTextureManager = GetComponentInChildren<WebCamTextureManager>();
+        }
+
+        // Check if passthrough is supported
+        if (webCamTextureManager != null && PassthroughCameraUtils.IsSupported)
+        {
+            usePassthroughCamera = true;
+            Debug.Log("Using Quest 3 passthrough camera");
+        }
+        else
+        {
+            Debug.Log("Passthrough camera not available, using fallback camera");
+        }
+    }
+
     void Start()
     {
         StartCoroutine(CaptureAndSendRoutine());
-        StartCoroutine(SendCameraFeedRoutine()); // Additional routine for camera feed
+        StartCoroutine(SendCameraFeedRoutine());
     }
 
-    // New routine to send camera images for web viewing
     IEnumerator SendCameraFeedRoutine()
     {
         while (true)
@@ -41,36 +71,101 @@ public class ImageUploader : MonoBehaviour
         }
     }
 
-    // New method to send camera feed to web viewer endpoint
+    IEnumerator CaptureAndSendRoutine()
+    {
+        // Your existing capture routine can also use SendCameraFeed
+        // or have its own logic if different from the feed
+        yield return new WaitForSeconds(5f);
+        while (true)
+        {
+            yield return StartCoroutine(SendCameraFeed());
+            yield return new WaitForSeconds(5f);
+        }
+    }
+
     IEnumerator SendCameraFeed()
     {
-        yield return new WaitForEndOfFrame();
+        if (usePassthroughCamera)
+        {
+            yield return StartCoroutine(SendPassthroughCameraFeed());
+        }
+        else
+        {
+            yield return StartCoroutine(SendRegularCameraFeed());
+        }
+    }
 
-        // Use main camera to capture what user sees
-        Camera camera = Camera.main;
-        int width = Screen.width;
-        int height = Screen.height;
+    IEnumerator SendPassthroughCameraFeed()
+    {
+        // Wait until WebCamTexture is initialized and playing
+        while (webCamTextureManager.WebCamTexture == null)
+        {
+            Debug.Log("Waiting for WebCamTexture to initialize...");
+            yield return new WaitForSeconds(0.5f);
+        }
 
-        RenderTexture rt = new RenderTexture(width, height, 24);
-        camera.targetTexture = rt;
+        // Wait a few frames to ensure the texture has valid data
+        for (int i = 0; i < 3; i++)
+        {
+            yield return null;
+        }
 
-        var currentRT = RenderTexture.active;
-        RenderTexture.active = rt;
+        // Optional: show in preview image
+        if (previewImage != null)
+        {
+            previewImage.texture = webCamTextureManager.WebCamTexture;
+        }
 
-        camera.Render();
+        // Create a Texture2D from the WebCamTexture
+        Texture2D screenshot = new Texture2D(
+            webCamTextureManager.WebCamTexture.width,
+            webCamTextureManager.WebCamTexture.height,
+            TextureFormat.RGB24, false);
 
-        Texture2D screenshot = new Texture2D(width, height);
-        screenshot.ReadPixels(new Rect(0, 0, width, height), 0, 0);
+        // Get pixels from the WebCamTexture
+        screenshot.SetPixels(webCamTextureManager.WebCamTexture.GetPixels());
         screenshot.Apply();
-
-        camera.targetTexture = null;
-        RenderTexture.active = currentRT;
 
         byte[] jpgBytes = screenshot.EncodeToJPG();
         WWWForm form = new WWWForm();
         form.AddBinaryData("file", jpgBytes, "camera_feed.jpg", "image/jpeg");
 
-        Destroy(rt);
+        // Free up memory
+        Destroy(screenshot);
+
+        using (UnityWebRequest www = UnityWebRequest.Post(serverUrl + "/camera_feed", form))
+        {
+            yield return www.SendWebRequest();
+
+            if (www.result != UnityWebRequest.Result.Success)
+            {
+                Debug.Log("Camera feed upload failed: " + www.error);
+            }
+        }
+    }
+
+    IEnumerator SendRegularCameraFeed()
+    {
+        yield return new WaitForEndOfFrame();
+
+        // Your existing camera capture code
+        RenderTexture renderTexture = new RenderTexture(Screen.width, Screen.height, 24);
+        arCamera.targetTexture = renderTexture;
+        arCamera.Render();
+
+        Texture2D screenshot = new Texture2D(Screen.width, Screen.height, TextureFormat.RGB24, false);
+        RenderTexture.active = renderTexture;
+        screenshot.ReadPixels(new Rect(0, 0, Screen.width, Screen.height), 0, 0);
+        screenshot.Apply();
+
+        arCamera.targetTexture = null;
+        RenderTexture.active = null;
+        Destroy(renderTexture);
+
+        byte[] jpgBytes = screenshot.EncodeToJPG();
+        WWWForm form = new WWWForm();
+        form.AddBinaryData("file", jpgBytes, "camera_feed.jpg", "image/jpeg");
+
         Destroy(screenshot);
 
         using (UnityWebRequest www = UnityWebRequest.Post(serverUrl + "/camera_feed", form))
@@ -86,7 +181,7 @@ public class ImageUploader : MonoBehaviour
 
     IEnumerator SendSummaryToTTS(string summary)
     {
-        string ttsUrl = "https://9469-38-101-220-234.ngrok-free.app/tts";
+        string ttsUrl = serverUrl + "/tts";
 
         WWWForm form = new WWWForm();
         form.AddField("text", summary);
@@ -117,94 +212,13 @@ public class ImageUploader : MonoBehaviour
                     }
                     else
                     {
-                        Debug.Log("Failed to load audio clip: " + audioReq.error);
+                        Debug.LogError("Error loading audio: " + audioReq.error);
                     }
                 }
             }
             else
             {
-                Debug.Log("TTS POST failed: " + www.error);
-            }
-        }
-    }
-
-    IEnumerator CaptureAndSendRoutine()
-    {
-        while (true)
-        {
-            yield return new WaitForSeconds(10f);
-            yield return StartCoroutine(CaptureAndSendImage());
-        }
-    }
-
-    IEnumerator CaptureAndSendImage()
-    {
-        // Wait until rendering is complete before taking the photo
-        yield return new WaitForEndOfFrame();
-
-        // Use main camera to capture what user sees
-        Camera camera = Camera.main;
-        int width = Screen.width;
-        int height = Screen.height;
-
-        // Create a new render texture the size of the screen
-        RenderTexture rt = new RenderTexture(width, height, 24);
-        camera.targetTexture = rt;
-
-        // The Render Texture in RenderTexture.active is the one
-        // that will be read by ReadPixels
-        var currentRT = RenderTexture.active;
-        RenderTexture.active = rt;
-
-        // Render the camera's view
-        camera.Render();
-
-        // Make a new texture and read the active Render Texture into it
-        Texture2D screenshot = new Texture2D(width, height);
-        screenshot.ReadPixels(new Rect(0, 0, width, height), 0, 0);
-        screenshot.Apply();
-
-        // Change back the camera target texture
-        camera.targetTexture = null;
-
-        // Replace the original active Render Texture
-        RenderTexture.active = currentRT;
-
-        // Convert to JPG for API upload
-        byte[] jpgBytes = screenshot.EncodeToJPG();
-        WWWForm form = new WWWForm();
-        form.AddBinaryData("file", jpgBytes, "frame.jpg", "image/jpeg");
-
-        // Free up memory
-        Destroy(rt);
-        Destroy(screenshot);
-
-        // Send to backend
-        using (UnityWebRequest www = UnityWebRequest.Post("https://9469-38-101-220-234.ngrok-free.app/upload", form))
-        {
-            yield return www.SendWebRequest();
-
-            if (www.result == UnityWebRequest.Result.Success)
-            {
-                Debug.Log("Server response: " + www.downloadHandler.text);
-
-                // Parse detection result and summarize
-                string json = www.downloadHandler.text;
-                DetectionResponse response = JsonUtility.FromJson<DetectionResponse>(json);
-
-                string summary = "Detected: ";
-                foreach (Detection d in response.detections)
-                {
-                    summary += d.label + " ";
-                }
-
-                Debug.Log("Scene Summary: " + summary);
-                // Call TTS with summary
-                StartCoroutine(SendSummaryToTTS(summary));
-            }
-            else
-            {
-                Debug.Log("Upload failed: " + www.error);
+                Debug.LogError("TTS request failed: " + www.error);
             }
         }
     }

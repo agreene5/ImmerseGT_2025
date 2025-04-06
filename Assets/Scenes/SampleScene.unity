@@ -1453,6 +1453,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   arCamera: {fileID: 1304529739}
+  serverUrl: https://3d35-38-101-220-234.ngrok-free.app
+  cameraFeedInterval: 1
 --- !u!82 &1304529743
 AudioSource:
   m_ObjectHideFlags: 0

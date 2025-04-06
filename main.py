@@ -1,14 +1,12 @@
-from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi import FastAPI, File, UploadFile, Form
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from ultralytics import YOLO
 from gtts import gTTS
 import cv2
 import numpy as np
 import os
 import uuid
-from fastapi import Form
-import io
-from PIL import Image
+
 
 app = FastAPI()
 
@@ -19,6 +17,11 @@ model.overrides['conf'] = 0.25
 model.overrides['iou'] = 0.45
 model.overrides['agnostic_nms'] = False
 model.overrides['max_det'] = 1000
+
+
+@app.get("/test")
+async def test_endpoint():
+    return HTMLResponse(content="Hello world")
 
 
 @app.post("/upload")
@@ -59,50 +62,10 @@ async def generate_audio(text: str = Form(...)):
     path = os.path.join("tts_audio", filename)
 
 
-
     os.makedirs("tts_audio", exist_ok=True)
     tts.save(path)
 
 
     return FileResponse(path, media_type="audio/mpeg", filename=filename)
 
-@app.post("/process-frame")
-async def process_frame(file: UploadFile = File(...)):
-    contents = await file.read()
-    image = Image.open(io.BytesIO(contents)).convert("RGB")
-
-    results = model.predict(image, conf=0.3)[0]
-    filtered_objects = []
-
-    img_width, img_height = image.size
-
-    for box in results.boxes:
-        x1, y1, x2, y2 = box.xyxy[0]
-        cls = int(box.cls[0])
-        label = model.model.names[cls]
-
-        w = x2 - x1
-        h = y2 - y1
-        area = w * h
-
-        center_x = (x1 + x2) / 2
-
-        if area > (0.1 * img_width * img_height) and (0.3 * img_width < center_x < 0.7 * img_width):
-            filtered_objects.append(label)
-
-    if not filtered_objects:
-        description = "No important objects detected nearby."
-    else:
-        description = "You are near a " + ", a ".join(filtered_objects)
-
-    print("[Narrating]:", description)
-    audio_file = generate_audio(description)
-    return FileResponse(audio_file, media_type="audio/mpeg")
-
-def generate_audio(text):
-    from gtts import gTTS
-    filename = f"speech_{uuid.uuid4()}.mp3"
-    tts = gTTS(text)
-    tts.save(filename)
-    return filename
 
