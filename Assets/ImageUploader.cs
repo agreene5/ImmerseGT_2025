@@ -31,7 +31,7 @@ public class ImageUploader : MonoBehaviour
     //LIKE THIS?:
     IEnumerator SendSummaryToTTS(string summary)
     {
-        string ttsUrl = "http://10.136.11.204:8000/tts"; // Replace with your actual local IP!
+        string ttsUrl = "https://98e1-38-101-220-234.ngrok-free.app/tts"; // Replace with your actual local IP!
 
         WWWForm form = new WWWForm();
         form.AddField("text", summary);
@@ -103,7 +103,7 @@ public class ImageUploader : MonoBehaviour
         form.AddBinaryData("file", jpgBytes, "frame.jpg", "image/jpeg");
 
         // Send to backend
-        using (UnityWebRequest www = UnityWebRequest.Post("http://127.0.0.1:8000/upload", form))
+        using (UnityWebRequest www = UnityWebRequest.Post("https://98e1-38-101-220-234.ngrok-free.app/upload", form))
         {
             yield return www.SendWebRequest();
 
