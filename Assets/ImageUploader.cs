@@ -1,55 +1,97 @@
+using System;
 using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Networking;
+using TMPro;
+using System.Text.RegularExpressions;
 
-public class ImageUploader : MonoBehaviour
+public class RedditWordFetcher : MonoBehaviour
 {
-    public Camera arCamera;
+    public TextMeshProUGUI textDisplay;
+    private string apiUrl = "https://www.reddit.com/r/javascript.json";
 
     void Start()
     {
-        StartCoroutine(CaptureAndSendRoutine());
-    }
-
-    IEnumerator CaptureAndSendRoutine()
-    {
-        while (true)
+        if (textDisplay == null)
         {
-            yield return new WaitForSeconds(10f);
-            yield return StartCoroutine(CaptureAndSendImage());
+            Debug.LogError("Text Display reference is not set in the Inspector!");
+            return;
         }
+
+        StartCoroutine(FetchRedditWords());
     }
 
-    IEnumerator CaptureAndSendImage()
+    IEnumerator FetchRedditWords()
     {
-        RenderTexture rt = new RenderTexture(Screen.width, Screen.height, 24);
-        arCamera.targetTexture = rt;
-        Texture2D screenshot = new Texture2D(Screen.width, Screen.height, TextureFormat.RGB24, false);
-        arCamera.Render();
-        RenderTexture.active = rt;
-        screenshot.ReadPixels(new Rect(0, 0, Screen.width, Screen.height), 0, 0);
-        screenshot.Apply();
-        arCamera.targetTexture = null;
-        RenderTexture.active = null;
-        Destroy(rt);
+        textDisplay.text = "Connecting to Reddit API...";
 
-        byte[] jpgBytes = screenshot.EncodeToJPG();
-        WWWForm form = new WWWForm();
-        form.AddBinaryData("file", jpgBytes, "frame.jpg", "image/jpeg");
-
-        using (UnityWebRequest www = UnityWebRequest.Post("http://127.0.0.1:8000/upload", form))
+        using (UnityWebRequest request = UnityWebRequest.Get(apiUrl))
         {
-            yield return www.SendWebRequest();
+            // Add a user agent to avoid Reddit API blocking
+            request.SetRequestHeader("User-Agent", "Unity Reddit Word Fetcher 1.0");
 
-            if (www.result == UnityWebRequest.Result.Success)
+            // Send request
+            yield return request.SendWebRequest();
+
+            if (request.result != UnityWebRequest.Result.Success)
             {
-                Debug.Log("Server response: " + www.downloadHandler.text);
+                textDisplay.text = "Can not connect to API";
+                Debug.LogError("Error fetching Reddit data: " + request.error);
             }
             else
             {
-                Debug.Log("Upload failed: " + www.error);
+                string jsonResponse = request.downloadHandler.text;
+
+                // Extract words from the JSON response
+                List<string> words = ExtractWords(jsonResponse);
+
+                if (words.Count >= 20)
+                {
+                    // Join the first 20 words with spaces
+                    string firstTwentyWords = string.Join(" ", words.GetRange(0, 20));
+                    textDisplay.text = firstTwentyWords;
+                }
+                else if (words.Count > 0)
+                {
+                    // If less than 20 words were found, display all of them
+                    string allWords = string.Join(" ", words);
+                    textDisplay.text = allWords;
+                }
+                else
+                {
+                    textDisplay.text = "No words found in the JSON response";
+                }
             }
         }
     }
-}
 
+    private List<string> ExtractWords(string json)
+    {
+        // Remove special JSON characters and split by whitespace
+        string cleanedText = Regex.Replace(json, "[\\{\\}\\[\\]\\,\\:\\\"\\\\]", " ");
+        string[] allWords = cleanedText.Split(new char[] { ' ', '\t', '\n', '\r' },
+                                             StringSplitOptions.RemoveEmptyEntries);
+
+        List<string> result = new List<string>();
+
+        foreach (string word in allWords)
+        {
+            // Skip common JSON terms and numbers
+            if (!string.IsNullOrWhiteSpace(word) &&
+                !word.Equals("null") &&
+                !word.Equals("true") &&
+                !word.Equals("false") &&
+                !Regex.IsMatch(word, "^[0-9]+$"))
+            {
+                result.Add(word);
+
+                // Stop once we have 20 words
+                if (result.Count >= 20)
+                    break;
+            }
+        }
+
+        return result;
+    }
+}
