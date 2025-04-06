@@ -4,8 +4,8 @@ using UnityEngine;
 using UnityEngine.Networking;
 using UnityEngine.XR.ARFoundation;
 using Unity.Collections;
-using static System.Net.Mime.MediaTypeNames;
-using System.Diagnostics;
+
+
 
 public class ImageUploader : MonoBehaviour
 {
