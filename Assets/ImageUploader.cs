@@ -2,11 +2,17 @@
 using System.IO;
 using UnityEngine;
 using UnityEngine.Networking;
-
+using UnityEngine.XR.ARFoundation;
+using Unity.Collections;
+using static System.Net.Mime.MediaTypeNames;
+using System.Diagnostics;
 
 public class ImageUploader : MonoBehaviour
 {
-    public Camera arCamera;
+    public ARCameraManager cameraManager;
+    private AudioSource audioSource;
+    public string backendUrl = "https://98e1-38-101-220-234.ngrok-free.app/process-frame";  // 👈 update this
+
 
     [System.Serializable]
     public class Detection
@@ -24,28 +30,91 @@ public class ImageUploader : MonoBehaviour
 
     void Start()
     {
-        StartCoroutine(CaptureAndSendRoutine());
-
+        audioSource = GetComponent<AudioSource>();
+        InvokeRepeating("TryCapture", 2f, 10f);  // every 10 seconds
     }
 
-    //LIKE THIS?:
+    void TryCapture()
+    {
+        if (cameraManager.TryAcquireLatestCpuImage(out UnityEngine.XR.ARSubsystems.XRCpuImage image))
+        {
+            StartCoroutine(ProcessImage(image));
+            image.Dispose();
+        }
+        else
+        {
+            Debug.LogWarning("Failed to get AR camera image.");
+        }
+    }
+
+    IEnumerator ProcessImage(UnityEngine.XR.ARSubsystems.XRCpuImage image)
+    {
+        var conversionParams = new UnityEngine.XR.ARSubsystems.XRCpuImage.ConversionParams
+        {
+            inputRect = new RectInt(0, 0, image.width, image.height),
+            outputDimensions = new Vector2Int(image.width, image.height),
+            outputFormat = TextureFormat.RGB24,
+            transformation = UnityEngine.XR.ARSubsystems.XRCpuImage.Transformation.None
+        };
+
+        int size = image.GetConvertedDataSize(conversionParams);
+        var buffer = new NativeArray<byte>(size, Allocator.Temp);
+        image.Convert(conversionParams, buffer);
+
+        Texture2D texture = new Texture2D(image.width, image.height, TextureFormat.RGB24, false);
+        texture.LoadRawTextureData(buffer);
+        texture.Apply();
+        buffer.Dispose();
+
+        byte[] imageBytes = texture.EncodeToJPG();
+        Destroy(texture);
+
+        WWWForm form = new WWWForm();
+        form.AddBinaryData("file", imageBytes, "frame.jpg", "image/jpeg");
+
+        using (UnityWebRequest www = UnityWebRequest.Post(backendUrl, form))
+        {
+            yield return www.SendWebRequest();
+
+            if (www.result == UnityWebRequest.Result.Success)
+            {
+                Debug.Log("Detection response: " + www.downloadHandler.text);
+
+                string json = www.downloadHandler.text;
+                DetectionResponse response = JsonUtility.FromJson<DetectionResponse>(json);
+
+                string summary = "Detected: ";
+                foreach (Detection d in response.detections)
+                {
+                    summary += d.label + " ";
+                }
+
+                Debug.Log("Scene Summary: " + summary);
+                StartCoroutine(SendSummaryToTTS(summary));
+            }
+            else
+            {
+                Debug.LogError("Upload failed: " + www.error);
+            }
+        }
+    }
+
     IEnumerator SendSummaryToTTS(string summary)
     {
-        string ttsUrl = "https://98e1-38-101-220-234.ngrok-free.app/tts"; // Replace with your actual local IP!
+        string ttsUrl = "https://98e1-38-101-220-234.ngrok-free.app/tts"; // 👈 update this to your TTS endpoint
+        
 
         WWWForm form = new WWWForm();
         form.AddField("text", summary);
 
         using (UnityWebRequest www = UnityWebRequest.Post(ttsUrl, form))
         {
-            www.downloadHandler = new DownloadHandlerBuffer(); // We want to download the .mp3 file
+            www.downloadHandler = new DownloadHandlerBuffer();
             yield return www.SendWebRequest();
 
             if (www.result == UnityWebRequest.Result.Success)
             {
                 byte[] audioData = www.downloadHandler.data;
-
-                // Convert to AudioClip
                 string audioPath = Path.Combine(Application.persistentDataPath, "response.mp3");
                 File.WriteAllBytes(audioPath, audioData);
 
@@ -56,9 +125,7 @@ public class ImageUploader : MonoBehaviour
                     if (audioReq.result == UnityWebRequest.Result.Success)
                     {
                         AudioClip clip = DownloadHandlerAudioClip.GetContent(audioReq);
-                        AudioSource audioSource = GetComponent<AudioSource>();
-                        audioSource.clip = clip;
-                        audioSource.Play();
+                        audioSource.PlayOneShot(clip);
                     }
                     else
                     {
@@ -72,66 +139,4 @@ public class ImageUploader : MonoBehaviour
             }
         }
     }
-
-
-    IEnumerator CaptureAndSendRoutine()
-    {
-        while (true)
-        {
-            yield return new WaitForSeconds(10f);
-            yield return StartCoroutine(CaptureAndSendImage());
-        }
-    }
-
-    IEnumerator CaptureAndSendImage()
-    {
-        // Capture screenshot from ARCamera
-        RenderTexture rt = new RenderTexture(Screen.width, Screen.height, 24);
-        arCamera.targetTexture = rt;
-        Texture2D screenshot = new Texture2D(Screen.width, Screen.height, TextureFormat.RGB24, false);
-        arCamera.Render();
-        RenderTexture.active = rt;
-        screenshot.ReadPixels(new Rect(0, 0, Screen.width, Screen.height), 0, 0);
-        screenshot.Apply();
-        arCamera.targetTexture = null;
-        RenderTexture.active = null;
-        Destroy(rt);
-
-        // Convert to JPG
-        byte[] jpgBytes = screenshot.EncodeToJPG();
-        WWWForm form = new WWWForm();
-        form.AddBinaryData("file", jpgBytes, "frame.jpg", "image/jpeg");
-
-        // Send to backend
-        using (UnityWebRequest www = UnityWebRequest.Post("https://98e1-38-101-220-234.ngrok-free.app/upload", form))
-        {
-            yield return www.SendWebRequest();
-
-            if (www.result == UnityWebRequest.Result.Success)
-            {
-                Debug.Log("Server response: " + www.downloadHandler.text);
-
-                // Step 2: Parse detection result and summarize
-                string json = www.downloadHandler.text;
-                DetectionResponse response = JsonUtility.FromJson<DetectionResponse>(json);
-
-                string summary = "Detected: ";
-                foreach (Detection d in response.detections)
-                {
-                    summary += d.label + " ";
-                }
-
-                Debug.Log("Scene Summary: " + summary);
-                // ✅ NOW call TTS from here
-                StartCoroutine(SendSummaryToTTS(summary));
-            }
-            else
-            {
-                Debug.Log("Upload failed: " + www.error);
-            }
-        }
-    }
 }
-
-
-
